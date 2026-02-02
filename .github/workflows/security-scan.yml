@@ -19,10 +19,17 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Claude CLI and Aikido MCP
+      - name: Install Claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Configure Aikido MCP
+        env:
+          AIKIDO_API_KEY: ${{ secrets.AIKIDO_API_KEY }}
         run: |
-          npm install -g @anthropic-ai/claude-code
-          npm install -g @aikidosec/mcp
+          claude mcp add aikido \
+            --transport stdio \
+            --env AIKIDO_API_KEY=$AIKIDO_API_KEY \
+            -- npx -y @aikidosec/mcp
 
       - name: Get changed files
         id: changed
@@ -45,47 +52,18 @@ jobs:
         if: steps.changed.outputs.skip == 'false'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          AIKIDO_API_KEY: ${{ secrets.AIKIDO_API_KEY }}
         run: |
-          # Configure Claude with Aikido MCP
-          mkdir -p ~/.claude
-
-          cat > ~/.claude.json << EOF
-          {
-            "projects": {
-              "$(pwd)": {
-                "mcpServers": {
-                  "aikido": {
-                    "type": "stdio",
-                    "command": "npx",
-                    "args": ["-y", "@aikidosec/mcp"],
-                    "env": {
-                      "AIKIDO_API_KEY": "${AIKIDO_API_KEY}"
-                    }
-                  }
-                }
-              }
-            }
-          }
-          EOF
-
-          echo "Claude config:"
-          cat ~/.claude.json
-
-          # Run Claude with the scan
           claude -p "
-          You are a security scanner. You MUST use the aikido_full_scan tool to scan code.
+          You are a security scanner. Use the aikido_full_scan tool to scan code.
 
           ## Changed Files
           ${{ steps.changed.outputs.files }}
 
           ## Instructions
 
-          1. First, read each changed file listed above using the Read tool
-          2. Then call mcp__aikido__aikido_full_scan with the file contents
-          3. Report the findings from Aikido
-
-          IMPORTANT: You must use the mcp__aikido__aikido_full_scan tool. Do not do manual analysis.
+          1. Read each changed file using the Read tool
+          2. Call mcp__aikido__aikido_full_scan with the file contents
+          3. Report the Aikido findings
 
           ## Output Format
 
@@ -96,12 +74,12 @@ jobs:
 
           ### Aikido Findings
 
-          (List each finding from the Aikido scan)
+          (List each finding from the scan)
 
           ### Summary
 
           (1-2 sentence summary)
-          " --allowedTools "mcp__aikido__aikido_full_scan,mcp__aikido__aikido_sast_scan,mcp__aikido__aikido_secrets_scan,Read,Glob" --print
+          " --allowedTools "mcp__aikido__aikido_full_scan,Read" --print
 
       - name: Skip message
         if: steps.changed.outputs.skip == 'true'
