@@ -1,0 +1,113 @@
+name: Security Scan
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Get changed files
+        id: changed
+        run: |
+          FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.(js|ts|jsx|tsx|java|py|go|rb|php)$' || true)
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          if [ -z "$FILES" ]; then
+            echo "No code files changed"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "Changed files:"
+            echo "$FILES"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Security Scan
+        if: steps.changed.outputs.skip == 'false'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AIKIDO_API_KEY: ${{ secrets.AIKIDO_API_KEY }}
+        run: |
+          # Configure Claude with Aikido MCP
+          mkdir -p ~/.claude
+          cat > ~/.claude.json << 'CONFIG'
+          {
+            "projects": {
+              ".": {
+                "mcpServers": {
+                  "aikido": {
+                    "type": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "@aikidosec/mcp"],
+                    "env": {
+                      "AIKIDO_API_KEY": "${AIKIDO_API_KEY}"
+                    }
+                  }
+                }
+              }
+            }
+          }
+          CONFIG
+
+          # Replace env var in config
+          sed -i "s|\${AIKIDO_API_KEY}|$AIKIDO_API_KEY|g" ~/.claude.json
+
+          # Run Claude with the scan
+          claude -p "
+          You are a security scanner reviewing a pull request.
+
+          ## Changed Files
+          ${{ steps.changed.outputs.files }}
+
+          ## Instructions
+
+          1. Read each changed file listed above
+          2. Use aikido_full_scan to scan all the changed files for vulnerabilities
+          3. Analyze the results and provide a clear report
+
+          ## Output Format
+
+          Respond with this exact format:
+
+          ## Security Scan Results
+
+          **Status:** PASS | FAIL
+
+          **Files Scanned:** (count)
+
+          ### Findings
+
+          (For each finding, list:)
+          - **File:** path
+          - **Line:** number
+          - **Severity:** Critical/High/Medium/Low
+          - **Issue:** description
+          - **Fix:** recommended fix
+
+          (Or 'No security issues found' if clean)
+
+          ### Summary
+
+          (1-2 sentence summary)
+          " --allowedTools "mcp__aikido__aikido_full_scan,Read" --print
+
+      - name: Skip message
+        if: steps.changed.outputs.skip == 'true'
+        run: echo "No code files changed, skipping security scan"
