@@ -7,12 +7,16 @@ on:
 jobs:
   security-scan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -21,6 +25,15 @@ jobs:
 
       - name: Install Claude CLI
         run: npm install -g @anthropic-ai/claude-code
+
+      - name: Configure Aikido MCP
+        env:
+          AIKIDO_API_KEY: ${{ secrets.AIKIDO_API_KEY }}
+        run: |
+          claude mcp add aikido \
+            --transport stdio \
+            --env AIKIDO_API_KEY=$AIKIDO_API_KEY \
+            -- npx -y @aikidosec/mcp
 
       - name: Get changed files
         id: changed
@@ -31,82 +44,175 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
           if [ -z "$FILES" ]; then
-            echo "No code files changed"
             echo "skip=true" >> $GITHUB_OUTPUT
           else
-            echo "Changed files:"
-            echo "$FILES"
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Run Security Scan
         if: steps.changed.outputs.skip == 'false'
+        id: scan
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          AIKIDO_API_KEY: ${{ secrets.AIKIDO_API_KEY }}
         run: |
-          # Configure Claude with Aikido MCP
-          mkdir -p ~/.claude
-          cat > ~/.claude.json << 'CONFIG'
-          {
-            "projects": {
-              ".": {
-                "mcpServers": {
-                  "aikido": {
-                    "type": "stdio",
-                    "command": "npx",
-                    "args": ["-y", "@aikidosec/mcp"],
-                    "env": {
-                      "AIKIDO_API_KEY": "${AIKIDO_API_KEY}"
-                    }
-                  }
-                }
-              }
-            }
-          }
-          CONFIG
-
-          # Replace env var in config
-          sed -i "s|\${AIKIDO_API_KEY}|$AIKIDO_API_KEY|g" ~/.claude.json
-
-          # Run Claude with the scan
           claude -p "
-          You are a security scanner reviewing a pull request.
+          You are a security scanner. Use the aikido_full_scan tool.
 
           ## Changed Files
           ${{ steps.changed.outputs.files }}
 
           ## Instructions
 
-          1. Read each changed file listed above
-          2. Use aikido_full_scan to scan all the changed files for vulnerabilities
-          3. Analyze the results and provide a clear report
+          1. Read each changed file
+          2. Call mcp__aikido__aikido_full_scan with the file contents
+          3. Report findings
 
           ## Output Format
 
-          Respond with this exact format:
-
           ## Security Scan Results
 
-          **Status:** PASS | FAIL
+          **Status:** PASS or FAIL
 
           **Files Scanned:** (count)
 
           ### Findings
 
-          (For each finding, list:)
-          - **File:** path
-          - **Line:** number
-          - **Severity:** Critical/High/Medium/Low
-          - **Issue:** description
-          - **Fix:** recommended fix
-
-          (Or 'No security issues found' if clean)
+          | Severity | File | Line | Issue |
+          |----------|------|------|-------|
+          (table of findings or 'No issues found')
 
           ### Summary
 
-          (1-2 sentence summary)
-          " --allowedTools "mcp__aikido__aikido_full_scan,Read" --print
+          (1-2 sentences)
+
+          ---
+          *Scanned by Claude + Aikido*
+          " --allowedTools "mcp__aikido__aikido_full_scan,Read" --print | tee scan_result.txt
+
+          # Debug: show what we got
+          echo "=== Scan result content ==="
+          cat scan_result.txt
+          echo "=== End scan result ==="
+
+          # Check status - look for FAIL anywhere in Status line
+          if grep -i "Status.*FAIL" scan_result.txt; then
+            echo "Found FAIL status"
+            echo "status=fail" >> $GITHUB_OUTPUT
+          else
+            echo "No FAIL status found"
+            echo "status=pass" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post Scan Results
+        if: steps.changed.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ github.event.number }} --body-file scan_result.txt
+
+      - name: Auto-fix Security Issues
+        if: steps.scan.outputs.status == 'fail'
+        id: autofix
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          echo "Starting auto-fix process..."
+
+          # Create fix branch
+          FIX_BRANCH="fix/security-pr-${{ github.event.number }}"
+          git checkout -b "$FIX_BRANCH"
+
+          # Run Claude to fix the issues
+          claude -p "
+          You are a security engineer. Fix the security vulnerabilities in the code.
+
+          ## Files to Fix
+          ${{ steps.changed.outputs.files }}
+
+          ## Instructions
+
+          1. Read each file listed above
+          2. Scan with mcp__aikido__aikido_full_scan to identify issues
+          3. Fix each security vulnerability:
+             - SQL Injection: Use parameterized queries
+             - Command Injection: Use safe APIs like execFile with arrays, or validate input strictly
+             - XSS: Sanitize output, use proper encoding
+             - Path Traversal: Validate paths, use allowlists, use path.basename()
+             - Hardcoded Secrets: Replace with process.env.VARIABLE_NAME
+          4. Edit the files using the Edit tool
+          5. After fixing, re-scan to verify fixes work
+
+          IMPORTANT: Actually edit the files using the Edit tool. Do not just report what to do.
+          " --allowedTools "mcp__aikido__aikido_full_scan,Read,Write,Edit" --print
+
+          # Check if any files were modified
+          if git diff --quiet; then
+            echo "No fixes applied"
+            echo "fixed=false" >> $GITHUB_OUTPUT
+          else
+            echo "Fixes applied - showing diff:"
+            git diff
+            echo "fixed=true" >> $GITHUB_OUTPUT
+            echo "branch=$FIX_BRANCH" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and Push Fixes
+        if: steps.autofix.outputs.fixed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add .
+          git commit -m "fix: Auto-fix security vulnerabilities
+
+          Automated fixes for security issues found in PR #${{ github.event.number }}
+
+          Co-Authored-By: Claude <noreply@anthropic.com>"
+
+          # Force push in case branch exists from previous run
+          git push origin "${{ steps.autofix.outputs.branch }}" --force
+
+      - name: Create Fix PR
+        if: steps.autofix.outputs.fixed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create the fix PR
+          PR_URL=$(gh pr create \
+            --title "fix: Security fixes for PR #${{ github.event.number }}" \
+            --head "${{ steps.autofix.outputs.branch }}" \
+            --base "${{ github.head_ref }}" \
+            --body "## Automated Security Fixes
+
+          This PR contains automated fixes for security vulnerabilities found in #${{ github.event.number }}.
+
+          ### What was fixed
+          - Security issues identified by Aikido scan
+          - Fixes applied by Claude
+
+          ### Review Checklist
+          - [ ] Verify fixes are correct
+          - [ ] Ensure no functionality is broken
+          - [ ] Merge into original PR branch
+
+          ---
+          *Auto-generated by Claude + Aikido Security Scan*")
+
+          # Comment on original PR
+          gh pr comment ${{ github.event.number }} --body "## 🔧 Auto-Fix PR Created
+
+          I've created a PR with fixes for the security issues: $PR_URL
+
+          Please review the fixes and merge into this branch if they look correct."
+
+      - name: Fail if security issues found
+        if: steps.scan.outputs.status == 'fail'
+        run: |
+          echo "❌ Security issues were found!"
+          echo "Check the auto-fix PR for proposed solutions."
+          exit 1
 
       - name: Skip message
         if: steps.changed.outputs.skip == 'true'
