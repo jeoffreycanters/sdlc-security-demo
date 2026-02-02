@@ -19,8 +19,10 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Claude CLI
-        run: npm install -g @anthropic-ai/claude-code
+      - name: Install Claude CLI and Aikido MCP
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          npm install -g @aikidosec/mcp
 
       - name: Get changed files
         id: changed
@@ -47,10 +49,11 @@ jobs:
         run: |
           # Configure Claude with Aikido MCP
           mkdir -p ~/.claude
-          cat > ~/.claude.json << 'CONFIG'
+
+          cat > ~/.claude.json << EOF
           {
             "projects": {
-              ".": {
+              "$(pwd)": {
                 "mcpServers": {
                   "aikido": {
                     "type": "stdio",
@@ -64,49 +67,41 @@ jobs:
               }
             }
           }
-          CONFIG
+          EOF
 
-          # Replace env var in config
-          sed -i "s|\${AIKIDO_API_KEY}|$AIKIDO_API_KEY|g" ~/.claude.json
+          echo "Claude config:"
+          cat ~/.claude.json
 
           # Run Claude with the scan
           claude -p "
-          You are a security scanner reviewing a pull request.
+          You are a security scanner. You MUST use the aikido_full_scan tool to scan code.
 
           ## Changed Files
           ${{ steps.changed.outputs.files }}
 
           ## Instructions
 
-          1. Read each changed file listed above
-          2. Use aikido_full_scan to scan all the changed files for vulnerabilities
-          3. Analyze the results and provide a clear report
+          1. First, read each changed file listed above using the Read tool
+          2. Then call mcp__aikido__aikido_full_scan with the file contents
+          3. Report the findings from Aikido
+
+          IMPORTANT: You must use the mcp__aikido__aikido_full_scan tool. Do not do manual analysis.
 
           ## Output Format
-
-          Respond with this exact format:
 
           ## Security Scan Results
 
           **Status:** PASS | FAIL
-
           **Files Scanned:** (count)
 
-          ### Findings
+          ### Aikido Findings
 
-          (For each finding, list:)
-          - **File:** path
-          - **Line:** number
-          - **Severity:** Critical/High/Medium/Low
-          - **Issue:** description
-          - **Fix:** recommended fix
-
-          (Or 'No security issues found' if clean)
+          (List each finding from the Aikido scan)
 
           ### Summary
 
           (1-2 sentence summary)
-          " --allowedTools "mcp__aikido__aikido_full_scan,Read" --print
+          " --allowedTools "mcp__aikido__aikido_full_scan,mcp__aikido__aikido_sast_scan,mcp__aikido__aikido_secrets_scan,Read,Glob" --print
 
       - name: Skip message
         if: steps.changed.outputs.skip == 'true'
