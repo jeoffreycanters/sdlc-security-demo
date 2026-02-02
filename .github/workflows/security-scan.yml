@@ -171,7 +171,8 @@ jobs:
 
           Co-Authored-By: Claude <noreply@anthropic.com>"
 
-          git push origin "${{ steps.autofix.outputs.branch }}"
+          # Force push in case branch exists from previous run
+          git push origin "${{ steps.autofix.outputs.branch }}" --force
 
       - name: Create Fix PR
         if: steps.autofix.outputs.fixed == 'true'
