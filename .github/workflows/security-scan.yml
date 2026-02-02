@@ -7,6 +7,9 @@ on:
 jobs:
   security-scan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
       - name: Checkout code
@@ -50,10 +53,11 @@ jobs:
 
       - name: Run Security Scan
         if: steps.changed.outputs.skip == 'false'
+        id: scan
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          claude -p "
+          RESULT=$(claude -p "
           You are a security scanner. Use the aikido_full_scan tool to scan code.
 
           ## Changed Files
@@ -63,23 +67,60 @@ jobs:
 
           1. Read each changed file using the Read tool
           2. Call mcp__aikido__aikido_full_scan with the file contents
-          3. Report the Aikido findings
+          3. Analyze findings and determine status
 
-          ## Output Format
+          ## Output Format (follow exactly)
 
           ## Security Scan Results
 
-          **Status:** PASS | FAIL
+          **Status:** PASS or FAIL (FAIL if any Critical or High severity issues)
+
           **Files Scanned:** (count)
 
-          ### Aikido Findings
+          ### Findings
 
-          (List each finding from the scan)
+          | Severity | File | Line | Issue |
+          |----------|------|------|-------|
+          (table rows for each finding, or 'No issues found')
 
           ### Summary
 
           (1-2 sentence summary)
-          " --allowedTools "mcp__aikido__aikido_full_scan,Read" --print
+
+          ---
+          *Scanned by Claude + Aikido*
+          " --allowedTools "mcp__aikido__aikido_full_scan,Read" --print)
+
+          echo "result<<EOF" >> $GITHUB_OUTPUT
+          echo "$RESULT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          # Check if FAIL is in the result
+          if echo "$RESULT" | grep -q "Status:\*\* FAIL"; then
+            echo "status=fail" >> $GITHUB_OUTPUT
+          else
+            echo "status=pass" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post PR Comment
+        if: steps.changed.outputs.skip == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const result = `${{ steps.scan.outputs.result }}`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: result
+            });
+
+      - name: Fail if security issues found
+        if: steps.scan.outputs.status == 'fail'
+        run: |
+          echo "Security issues found! Failing the build."
+          exit 1
 
       - name: Skip message
         if: steps.changed.outputs.skip == 'true'
