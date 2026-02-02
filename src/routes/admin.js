@@ -2,7 +2,7 @@ const express = require('express');
 const { exec } = require('child_process');
 const router = express.Router();
 
-// VULNERABILITY: Hardcoded credentials
+// VULNERABILITY: Hardcoded credentials (testing CI scan)
 const ADMIN_PASSWORD = "admin123";
 const API_SECRET = "sk-1234567890abcdef";
 const DATABASE_URL = "mysql://admin:password123@localhost:3306/app";
