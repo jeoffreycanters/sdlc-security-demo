@@ -87,17 +87,19 @@ jobs:
 
           ---
           *Scanned by Claude + Aikido*
-          " --allowedTools "mcp__aikido__aikido_full_scan,Read" --print > scan_result.txt
+          " --allowedTools "mcp__aikido__aikido_full_scan,Read" --print | tee scan_result.txt
 
-          # Save to output
-          echo "result<<EOFRESULT" >> $GITHUB_OUTPUT
-          cat scan_result.txt >> $GITHUB_OUTPUT
-          echo "EOFRESULT" >> $GITHUB_OUTPUT
+          # Debug: show what we got
+          echo "=== Scan result content ==="
+          cat scan_result.txt
+          echo "=== End scan result ==="
 
-          # Check status
-          if grep -q "**Status:** FAIL" scan_result.txt; then
+          # Check status - look for FAIL anywhere in Status line
+          if grep -i "Status.*FAIL" scan_result.txt; then
+            echo "Found FAIL status"
             echo "status=fail" >> $GITHUB_OUTPUT
           else
+            echo "No FAIL status found"
             echo "status=pass" >> $GITHUB_OUTPUT
           fi
 
@@ -114,6 +116,8 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
+          echo "Starting auto-fix process..."
+
           # Create fix branch
           FIX_BRANCH="fix/security-pr-${{ github.event.number }}"
           git checkout -b "$FIX_BRANCH"
@@ -131,14 +135,14 @@ jobs:
           2. Scan with mcp__aikido__aikido_full_scan to identify issues
           3. Fix each security vulnerability:
              - SQL Injection: Use parameterized queries
-             - Command Injection: Use safe APIs, validate input
+             - Command Injection: Use safe APIs like execFile with arrays, or validate input strictly
              - XSS: Sanitize output, use proper encoding
-             - Path Traversal: Validate paths, use allowlists
-             - Hardcoded Secrets: Use environment variables
-          4. Write the fixed files using the Edit tool
+             - Path Traversal: Validate paths, use allowlists, use path.basename()
+             - Hardcoded Secrets: Replace with process.env.VARIABLE_NAME
+          4. Edit the files using the Edit tool
           5. After fixing, re-scan to verify fixes work
 
-          IMPORTANT: Actually edit the files. Do not just report what to do.
+          IMPORTANT: Actually edit the files using the Edit tool. Do not just report what to do.
           " --allowedTools "mcp__aikido__aikido_full_scan,Read,Write,Edit" --print
 
           # Check if any files were modified
@@ -146,7 +150,8 @@ jobs:
             echo "No fixes applied"
             echo "fixed=false" >> $GITHUB_OUTPUT
           else
-            echo "Fixes applied"
+            echo "Fixes applied - showing diff:"
+            git diff
             echo "fixed=true" >> $GITHUB_OUTPUT
             echo "branch=$FIX_BRANCH" >> $GITHUB_OUTPUT
           fi
@@ -201,10 +206,11 @@ jobs:
 
           Please review the fixes and merge into this branch if they look correct."
 
-      - name: Fail if unfixed issues
+      - name: Fail if security issues found
         if: steps.scan.outputs.status == 'fail'
         run: |
-          echo "Security issues were found. Check the auto-fix PR for proposed solutions."
+          echo "❌ Security issues were found!"
+          echo "Check the auto-fix PR for proposed solutions."
           exit 1
 
       - name: Skip message
