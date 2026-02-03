@@ -1,0 +1,23 @@
+## Security Scan Results
+
+**Status:** FAIL
+
+**Files Scanned:** 1
+
+### Findings
+
+| Severity | File | Line | Issue |
+|----------|------|------|-------|
+| CRITICAL (89) | src/routes/admin.js | 15 | Potential for OS command injection via child_process call - user input directly passed to shell command |
+| CRITICAL (89) | src/routes/admin.js | 29 | Potential for OS command injection via child_process call - user input used in tar command |
+| HIGH (80) | src/routes/admin.js | 7 | Detected a Generic API Key, potentially exposing access to various services |
+| HIGH (80) | src/routes/admin.js | 6 | Identified a HashiCorp Terraform password field - hardcoded credentials detected |
+| MEDIUM (70) | src/routes/admin.js | 47 | Potential file inclusion attack via reading file - path traversal vulnerability |
+| MEDIUM (70) | src/routes/admin.js | 58 | Timing attack vulnerability in password comparison - allows password bruteforce |
+
+### Summary
+
+The scan identified 6 security vulnerabilities across multiple severity levels. Critical command injection vulnerabilities were found in the `/ping` and `/backup` endpoints, hardcoded secrets/credentials in the configuration, a path traversal vulnerability in the `/logs` endpoint, and a timing attack vulnerability in the authentication logic. All findings require immediate remediation before deployment.
+
+---
+*Scanned by Claude + Aikido*
