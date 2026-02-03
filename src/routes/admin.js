@@ -1,47 +1,70 @@
 const express = require('express');
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 const router = express.Router();
 
-// VULNERABILITY: Hardcoded credentials (testing CI scan)
-const ADMIN_PASSWORD = "admin123";
-const API_SECRET = "sk-1234567890abcdef";
-const DATABASE_URL = "mysql://admin:password123@localhost:3306/app";
+// Fixed: Use environment variables instead of hardcoded credentials
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+const API_SECRET = process.env.API_SECRET;
+const DATABASE_URL = process.env.DATABASE_URL;
 
-// VULNERABILITY: Command Injection
+// Fixed: Use execFile with argument array to prevent command injection
 router.get('/ping', (req, res) => {
   const { host } = req.query;
 
-  // User input directly passed to shell command
-  exec(`ping -c 1 ${host}`, (error, stdout, stderr) => {
+  // Validate host input - only allow alphanumeric, dots, and hyphens
+  if (!host || !/^[a-zA-Z0-9.-]+$/.test(host)) {
+    return res.status(400).json({ error: 'Invalid host parameter' });
+  }
+
+  // Use execFile with arguments array - no shell interpretation
+  execFile('ping', ['-c', '1', host], (error, stdout, stderr) => {
     if (error) {
-      res.status(500).json({ error: stderr });
+      res.status(500).json({ error: 'Ping failed' });
       return;
     }
     res.json({ result: stdout });
   });
 });
 
-// VULNERABILITY: Command Injection - another variant
+// Fixed: Use execFile with argument array and validate filename
 router.post('/backup', (req, res) => {
   const { filename } = req.body;
 
-  // User-controlled filename in shell command
-  exec(`tar -czf /backups/${filename}.tar.gz /data`, (error, stdout, stderr) => {
+  // Validate filename - only allow alphanumeric, underscores, and hyphens
+  if (!filename || !/^[a-zA-Z0-9_-]+$/.test(filename)) {
+    return res.status(400).json({ error: 'Invalid filename parameter' });
+  }
+
+  // Use execFile with arguments array - no shell interpretation
+  execFile('tar', ['-czf', `/backups/${filename}.tar.gz`, '/data'], (error, stdout, stderr) => {
     if (error) {
-      res.status(500).json({ error: stderr });
+      res.status(500).json({ error: 'Backup failed' });
       return;
     }
     res.json({ message: 'Backup created', file: `${filename}.tar.gz` });
   });
 });
 
-// VULNERABILITY: Path Traversal
+// Fixed: Prevent path traversal by using path.basename()
 router.get('/logs', (req, res) => {
   const { file } = req.query;
   const fs = require('fs');
+  const path = require('path');
 
-  // User input used directly in file path
-  const logPath = `/var/logs/${file}`;
+  // Validate file parameter exists
+  if (!file) {
+    return res.status(400).json({ error: 'File parameter is required' });
+  }
+
+  // Use path.basename() to prevent directory traversal
+  const safeFilename = path.basename(file);
+
+  // Additional validation - only allow alphanumeric, dots, underscores, and hyphens
+  if (!/^[a-zA-Z0-9._-]+$/.test(safeFilename)) {
+    return res.status(400).json({ error: 'Invalid filename' });
+  }
+
+  const logPath = path.join('/var/logs', safeFilename);
 
   try {
     const content = fs.readFileSync(logPath, 'utf8');
@@ -51,11 +74,31 @@ router.get('/logs', (req, res) => {
   }
 });
 
-// Simple auth check (using hardcoded password - also a vulnerability)
+// Fixed: Use timing-safe comparison to prevent timing attacks
 router.post('/login', (req, res) => {
   const { password } = req.body;
+  const crypto = require('crypto');
 
-  if (password === ADMIN_PASSWORD) {
+  // Check if required environment variables are set
+  if (!ADMIN_PASSWORD || !API_SECRET) {
+    return res.status(500).json({ error: 'Server configuration error' });
+  }
+
+  // Convert strings to buffers for timing-safe comparison
+  const passwordBuffer = Buffer.from(password || '');
+  const adminPasswordBuffer = Buffer.from(ADMIN_PASSWORD);
+
+  // Ensure buffers are the same length for timingSafeEqual
+  let isValid = false;
+  if (passwordBuffer.length === adminPasswordBuffer.length) {
+    try {
+      isValid = crypto.timingSafeEqual(passwordBuffer, adminPasswordBuffer);
+    } catch (error) {
+      isValid = false;
+    }
+  }
+
+  if (isValid) {
     res.json({ token: API_SECRET });
   } else {
     res.status(401).json({ error: 'Invalid password' });
